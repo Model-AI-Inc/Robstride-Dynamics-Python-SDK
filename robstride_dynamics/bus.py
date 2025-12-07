@@ -16,6 +16,11 @@ import can
 import numpy as np
 from tqdm import tqdm
 
+try:  # optional dependency needed for SLCAN interfaces
+    import serial  # type: ignore
+except ImportError:
+    serial = None
+
 from .table import (
     MODEL_MIT_POSITION_TABLE,
     MODEL_MIT_VELOCITY_TABLE,
@@ -45,11 +50,15 @@ class RobstrideBus:
         motors: dict[str, Motor],
         calibration: dict[str, dict] | None = None,
         bitrate: int = 1000000,
+        interface: str = "socketcan",
+        debug: bool = False,
     ):
         self.channel = channel
         self.motors = motors
         self.calibration = calibration
         self.bitrate = bitrate
+        self.interface = interface
+        self.debug = debug
 
         if self.calibration:
             print(f"Using calibration: {self.calibration}")
@@ -101,8 +110,14 @@ class RobstrideBus:
                 f"Do not call `{self.__class__.__name__}.connect()` twice."
             )
 
+        if self.interface == "slcan" and serial is None:
+            raise RuntimeError(
+                "Interface 'slcan' requires `pyserial`. Install with "
+                "`uv add pyserial`."
+            )
+
         self.channel_handler = can.interface.Bus(
-            interface="socketcan",
+            interface=self.interface,
             channel=self.channel,
             bitrate=self.bitrate,
         )
@@ -127,10 +142,18 @@ class RobstrideBus:
         print(f"{self.__class__.__name__} disconnected.")
 
     @classmethod
-    def scan_channel(cls, channel: str, start_id: int = 1, end_id: int = 255) -> dict[int, list[int]]:
+    def scan_channel(
+        cls,
+        channel: str,
+        start_id: int = 1,
+        end_id: int = 255,
+        *,
+        interface: str = "socketcan",
+        bitrate: int = 1000000,
+    ) -> dict[int, list[int]]:
         """Probe channel and list responding IDs.
         """
-        bus = cls(channel, {})
+        bus = cls(channel, {}, bitrate=bitrate, interface=interface)
         bus.connect(handshake=False)
 
         device_ids = {}
@@ -398,6 +421,14 @@ class RobstrideBus:
         """
         device_id = self.motors[motor].id
         self.transmit(CommunicationType.ENABLE, self.host_id, device_id)
+        self.receive_status_frame(motor)
+    
+    def set_zero_position(self, motor: str):
+        """
+        Set the zero position of the motor.
+        """
+        device_id = self.motors[motor].id
+        self.transmit(CommunicationType.SET_ZERO_POSITION, self.host_id, device_id)
         self.receive_status_frame(motor)
 
     def disable(self, motor: str):
